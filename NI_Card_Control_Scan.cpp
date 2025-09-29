@@ -1,9 +1,8 @@
-//
 // Created by Orkun Acar on 22.09.2025.
 //
 
 #include "NI_Card_Control_Scan.h"
-#include <NIDAQmx.h>
+//#include <NIDAQmx.h>
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -12,58 +11,76 @@
 #include <string>
 #include <thread>
 
+using namespace std;
+
+
+// ---------- Error handling macro ----------
+#define DAQmxErrChk(functionCall) do {                      \
+    int32 error = (functionCall);                           \
+    if (DAQmxFailed(error)) {                               \
+        char errBuff[2048] = {'\0'};                        \
+        DAQmxGetExtendedErrorInfo(errBuff, 2048);           \
+        cerr << "DAQmx Error: " << errBuff << "\n";    \
+        if (taskHandle != 0) {                              \
+            DAQmxStopTask(taskHandle);                      \
+            DAQmxClearTask(taskHandle);                     \
+        }                                                   \
+        return -1;                                          \
+    }                                                       \
+} while(0)
+
 // Helper: degrees → voltage
 double calculate_voltage_for_degree(double voltage_range, double degree_range, double target_degree) {
     return (voltage_range * target_degree) / degree_range;
 }
 
 // Helper: indices → degrees
-std::pair<double, double> pointsToDegree(int point_x, int point_y, double step_size) {
+pair<double, double> pointsToDegree(int point_x, int point_y, double step_size) {
     double degree_x = point_x * step_size;
     double degree_y = point_y * step_size;
     return {degree_x, degree_y};
 }
 
 // Read CSV into vector of precomputed voltages (X, Y)
-std::vector<std::pair<double, double>> readCSV_and_precompute(
-        const std::string& filename,
+vector<pair<double, double>> readCSV_and_precompute(
+        const string& filename,
         double step_size,
         double voltage_range,
         double degree_range)
-{
-    std::vector<std::pair<double, double>> voltages;
-    std::ifstream file(filename);
-    if (!file.is_open()) {
-        std::cerr << "Error opening file: " << filename << "\n";
-        return voltages;
-    }
+    {
+        vector<pair<double, double>> voltages;
+        ifstream file(filename);
+        if (!file.is_open()) {
+            cerr << "Error opening file: " << filename << "\n";
+            return voltages;
+        }
 
-    std::string line;
-    // Discard header
-    std::getline(file, line);
+        string line;
+        // Discard header
+        getline(file, line);
 
-    while (std::getline(file, line)) {
-        std::stringstream ss(line);
-        std::string x_str, y_str;
+        while (getline(file, line)) {
+            stringstream ss(line);
+            string x_str, y_str;
 
-        if (std::getline(ss, x_str, ',') && std::getline(ss, y_str, ',')) {
-            try {
-                int x_idx = std::stoi(x_str);
-                int y_idx = std::stoi(y_str);
+            if (getline(ss, x_str, ',') && getline(ss, y_str, ',')) {
+                try {
+                    int x_idx = stoi(x_str);
+                    int y_idx = stoi(y_str);
 
-                // Convert indices → degrees using helper
-                auto [degX, degY] = pointsToDegree(x_idx, y_idx, step_size);
+                    // Convert indices → degrees
+                    auto [degX, degY] = pointsToDegree(x_idx, y_idx, step_size);
 
-                // Convert degrees → voltages using helper
-                double voltX = calculate_voltage_for_degree(voltage_range, degree_range, degX);
-                double voltY = calculate_voltage_for_degree(voltage_range, degree_range, degY);
+                    // Convert degrees → voltages
+                    double voltX = calculate_voltage_for_degree(voltage_range, degree_range, degX);
+                    double voltY = calculate_voltage_for_degree(voltage_range, degree_range, degY);
 
-                voltages.emplace_back(voltX, voltY);
-            } catch (...) {
-                std::cerr << "Skipping malformed row: " << line << "\n";
+                    voltages.emplace_back(voltX, voltY);
+                } catch (...) {
+                    cerr << "Skipping malformed row: " << line << "\n";
+                }
             }
         }
-    }
     return voltages;
 }
 
@@ -72,41 +89,51 @@ int main() {
     const char* device = "Dev1";        // Change to match NI MAX device name
     const char* channelX = "Dev1/ao0";  // Galvo X output
     const char* channelY = "Dev1/ao1";  // Galvo Y output
-    double voltage_range = 5.0;         // ±5 V
-    double degree_range = 22.5;         // ±22.5° max scan
-    double step_size = 0.01;            // degrees per index step
-    int settle_ms = 1;                  // delay after each move
+    const double voltage_range = 5.0;   // ±5 V
+    const double degree_range = 22.5;   // ±22.5° max scan
+    const double step_size = 0.15;      // degrees per index step
+    const int settle_ms = 1;            // delay after each move ms
+    const int settle_microseconds = 200;// delay after each move microseconds
 
     // Load CSV and precompute voltages
-    std::vector<std::pair<double, double>> voltages =
+    vector<pair<double, double>> voltages =
         readCSV_and_precompute("ExampleRectangleCSV.csv", step_size, voltage_range, degree_range);
 
     if (voltages.empty()) {
-        std::cerr << "No points loaded!\n";
+        cerr << "No points loaded!\n";
         return -1;
     }
 
     // Setup DAQmx task
     TaskHandle taskHandle = 0;
-    int32 error = 0;
-    error = DAQmxCreateTask("", &taskHandle);
-    error = DAQmxCreateAOVoltageChan(taskHandle, channelX, "", -voltage_range, voltage_range, DAQmx_Val_Volts, NULL);
-    error = DAQmxCreateAOVoltageChan(taskHandle, channelY, "", -voltage_range, voltage_range, DAQmx_Val_Volts, NULL);
-    error = DAQmxStartTask(taskHandle);
+    DAQmxErrChk(DAQmxCreateTask("", &taskHandle));
+    DAQmxErrChk(DAQmxCreateAOVoltageChan(taskHandle, channelX, "", -voltage_range, voltage_range, DAQmx_Val_Volts, NULL));
+    DAQmxErrChk(DAQmxCreateAOVoltageChan(taskHandle, channelY, "", -voltage_range, voltage_range, DAQmx_Val_Volts, NULL));
+    DAQmxErrChk(DAQmxStartTask(taskHandle));
 
     // Iterate precomputed voltages
     for (auto& v : voltages) {
-        float64 data[2] = { v.first, v.second };
-        int32 written;
-        error = DAQmxWriteAnalogF64(taskHandle, 1, 1, 10.0, DAQmx_Val_GroupByChannel, data, &written, NULL);
+        float64 data[2] = { v.first, v.second };  // X, Y
+        int32 written = 0;
+        int32 error = DAQmxWriteAnalogF64(taskHandle,
+                                          1,                // samples per channel
+                                          1,                // autostart
+                                          10.0,             // timeout
+                                          DAQmx_Val_GroupByScanNumber, // safer grouping
+                                          data,
+                                          &written,
+                                          NULL);
 
-        if (error) {
-            std::cerr << "Error writing voltages (" << v.first << "," << v.second << ")\n";
+        if (DAQmxFailed(error)) {
+            char errBuff[2048] = {'\0'};
+            DAQmxGetExtendedErrorInfo(errBuff, 2048);
+            cerr << "DAQmx Error writing voltages (" << v.first << "," << v.second << "): "
+                      << errBuff << "\n";
         } else {
-            std::cout << "Output voltages: X=" << v.first << " V, Y=" << v.second << " V\n";
+            cout << "Output voltages: X=" << v.first << " V, Y=" << v.second << " V\n";
         }
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(settle_ms));
+        this_thread::sleep_for(chrono::microseconds(settle_microseconds));
     }
 
     // Cleanup
